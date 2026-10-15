@@ -18,13 +18,13 @@ Snapshots are verified against both a SHA-256 fingerprint and the compiled-in tr
 
 The runner executes trusted fixture code, not an imported repository or supplied source. It permits one of two fixed generated solutions, calls an absolute Node binary with argument arrays, uses a new private workspace, strips inherited environment variables, bounds runtime to five seconds and output to 64 KiB, and uses Node permission restrictions with filesystem reads limited to that workspace. It does not use a shell, unrestricted eval, arbitrary commands, network allowances, child-process allowances or worker allowances.
 
-Node permissions and temporary directories are not a security boundary for arbitrary hostile code. There is no container, VM, kernel resource quota, or whole-system filesystem snapshot. A hostile repository runner is intentionally absent. Introduce OS isolation and test its guarantees before extending executable inputs. A host sandbox that blocks subprocess creation/output causes an operational failure; the runner refuses to treat empty output as a test result.
+The live driver verifies the expected file inventory and bytes around tool actions, using no-follow reads. Node still reopens modules after verification: concurrent same-user filesystem races are not eliminated. Node permissions and temporary directories are not a security boundary for arbitrary hostile code. There is no container, VM, kernel resource quota, or whole-system filesystem snapshot. A hostile repository runner is intentionally absent. Introduce OS isolation and test its guarantees before extending executable inputs. A host sandbox that blocks subprocess creation/output causes an operational failure; the runner refuses to treat empty output as a test result.
 
 ## Recording and data integrity
 
 SQLite receives whole traces atomically after a run finishes or a handled operational failure occurs. A crash or termination before that point can lose in-flight events. WAL and transactions prevent partially committed histories, but there is no crash-recovery journal for the recorder itself.
 
-The storage digest detects accidental modifications when loading a stored trace. It is not a signature, tamper-proof audit system, or proof that a tool truly ran. JSONL has structural validation and snapshot fingerprints but no independently authenticated producer identity. Imports can preserve parent IDs without the parent being present; comparison requires and validates both histories.
+The storage digest detects accidental event modifications when loading a stored trace; loads and listings also cross-check denormalized metadata against event bodies. It is not a signature, tamper-proof audit system, or proof that a tool truly ran. JSONL has structural validation and snapshot fingerprints but no independently authenticated producer identity. Imports can preserve parent IDs without the parent being present; comparison requires and validates both histories.
 
 Trace import and parsing are local, synchronous operations intended for small histories. There are no streaming trace-size quotas or multi-user access controls. SQL statements are parameterized. Read-only inspection still opens the local database through the same SQLite store; no hosted service is exposed.
 
@@ -34,7 +34,7 @@ The recorder recursively filters sensitive field names before validation/storage
 
 ## Causal interpretation
 
-A failing original and passing fork are a controlled contrast for one fixture and one changed observation. They do not establish universal causation, exclusive attribution, statistical significance or production readiness. Deterministic repeats are not independent evidence. The experiment API exposes a named success predicate and per-trial metadata, but no confidence intervals or stochastic sampling framework.
+A failing original and passing fork are a controlled contrast for one fixture and one changed observation. They do not establish universal causation, exclusive attribution, statistical significance or production readiness. Deterministic repeats are not independent evidence. Custom success predicates receive defensive event copies but remain trusted code that can mutate process globals or external state. The experiment API exposes a named success predicate and per-trial metadata, but no confidence intervals or stochastic sampling framework.
 
 ## Intentionally deferred
 

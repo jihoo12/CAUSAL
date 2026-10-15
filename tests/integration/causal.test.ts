@@ -216,7 +216,7 @@ describe('real counterfactual continuation', () => {
     const original = runLive().events;
     const fork = forkTrace(original, target(original), correctedDocs).events;
     expect(() => compare(runLive().events, fork)).toThrow(/parent/);
-    const forged = mutate(fork, es => { const e = es.find(e => e.eventType === 'intervention.applied'); if (e?.eventType === 'intervention.applied') e.payload.original = correctedDocs; });
+    const forged = mutate(fork, es => { const e = es.find(e => e.eventType === 'intervention.applied'); if (e?.eventType === 'intervention.applied') e.payload.original = { api: 'auth.loginLegacy()', provenance: 'forged' }; });
     expect(() => compare(original, forged)).toThrow(/parent tool output/);
   });
 });

@@ -34,3 +34,28 @@ The final demo saved these local artifacts (intentionally ignored by Git):
 ```
 
 Fresh runs create new IDs and timestamps. Identical deterministic trial outcomes are reproducibility checks, not independent statistical evidence. These checks establish the documented fixture behavior, not production readiness or general causal debugging.
+
+## Skeptical correctness review verification
+
+The follow-up review inspected implementation at `6fdf850`; findings and remaining assumptions are in [review.md](review.md).
+
+Baseline `pnpm build`, `pnpm typecheck`, `pnpm test`, and CLI help passed all original 19 tests. Before engine fixes, the first 24 adversarial cases produced **17 failures, 7 passes**, while the original 19 still passed. This reproduced defects in workspace fidelity, mutable trust anchors/recorder handles, canonical hashing, lineage/terminal rules, aborted-fork persistence, SQLite metadata integrity, and predicate mutation.
+
+After the focused fixes, executed:
+
+```sh
+XDG_CACHE_HOME=/tmp/causal-nix-cache nix develop path:. --command bash -c 'pnpm build && pnpm typecheck && pnpm test && pnpm causal --help && pnpm causal demo --trials 2'
+```
+
+This passed build/type checks, 44 tests, help and the real two-trial demo. Two additional targeted tests then closed blind spots in symlink verification and post-test snapshot fidelity. `pnpm typecheck` and `pnpm test` were rerun: **46 tests passed across 2 files**, including 27 adversarial cases; final suite duration 2.35 seconds. No engine changes followed that verification.
+
+The final same-engine demo report is:
+
+```text
+.causal/reports/ab64582c-dc59-4697-8267-c23365f408f9/report.json
+.causal/reports/ab64582c-dc59-4697-8267-c23365f408f9/report.txt
+```
+
+Original `ab64582c-dc59-4697-8267-c23365f408f9` failed with a real legacy-API `TypeError`. Children `e4ddc0b3-e841-4893-a80e-ef6a7704fb5b` and `100bb5b5-77e8-4d5d-a1e1-4cf88aa92f9b` both passed actual assertions. Original frozen-tool replay matched 12 events. Full JSONL histories are saved beside the report and in `.causal/traces.sqlite`.
+
+Direct subprocess observation verifies changed on-disk solution bytes, fresh downstream tool invocations, matching fixture library/runner bytes, separate directories, explicit child environments and bounded execution. Metadata-normalization and portable import tests pass; changed runtime metadata is intentionally rejected. A deliberately fabricated but internally consistent tool tape still replays: this documents the authentication limit instead of claiming replay proves live execution.

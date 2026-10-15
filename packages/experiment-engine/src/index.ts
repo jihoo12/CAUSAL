@@ -55,17 +55,24 @@ export interface ExperimentOptions {
 export function experiment(options: ExperimentOptions) {
   if (!Number.isInteger(options.trials) || options.trials < 1 || options.trials > 100) throw new Error('Trials must be an integer between 1 and 100');
   if (options.successPredicate && !options.predicateName) throw new Error('A custom success predicate requires a predicateName');
-  const success = options.successPredicate ?? ((events: ExecutionEvent[]) => outcome(events).success);
-  const originalSuccess = success(options.original);
+  const original = validateTrace(options.original);
+  exactReplay(original);
+  const predicate = options.successPredicate ?? ((events: ExecutionEvent[]) => outcome(events).success);
+  const success = (events: ExecutionEvent[]): boolean => {
+    const value = predicate(structuredClone(events));
+    if (typeof value !== 'boolean') throw new Error('Success predicate must return a boolean');
+    return value;
+  };
+  const originalSuccess = success(original);
   const trials = Array.from({ length: options.trials }, (_, index) => {
     const startedAt = new Date().toISOString();
-    const run = forkTrace(options.original, options.targetEventId, options.replacement, options.store);
+    const run = forkTrace(original, options.targetEventId, options.replacement, options.store);
     return { index, startedAt, completedAt: new Date().toISOString(), success: success(run.events),
-      traceId: run.events[0]!.traceId, comparison: compare(options.original, run.events) };
+      traceId: run.events[0]!.traceId, comparison: compare(original, run.events) };
   });
   const successes = trials.filter(t => t.success).length;
   return { schemaVersion: 1, predicate: options.predicateName ?? 'real-authentication-test-passes',
-    original: outcome(options.original), originalSuccess, trials, successCounts: { successes, failures: trials.length - successes },
+    original: outcome(original), originalSuccess, trials, successCounts: { successes, failures: trials.length - successes },
     counterfactualSuccessRate: successes / trials.length,
     successRateDifference: successes / trials.length - Number(originalSuccess),
     independentStatisticalEvidence: false, limitations };

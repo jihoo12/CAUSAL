@@ -104,7 +104,7 @@ The agent is deliberately small: it maps one of two validated documentation resp
 - The recorder redacts nested fields matching password, secret, token, authorization, cookie, and API-key names. It never captures the process environment. Field filtering cannot recognize secrets embedded in free text. Imported traces retain their supplied fields.
 - Complete traces are committed atomically; a hard process crash before commit can lose the in-progress recording. Integrity hashes detect accidental changes; they do not prevent malicious rewriting or provide signatures.
 
-See [architecture](docs/architecture.md), [trace format](docs/trace-format.md), [replay semantics](docs/replay-semantics.md), and [limitations](docs/limitations.md).
+See the [skeptical correctness review](docs/review.md), [architecture](docs/architecture.md), [trace format](docs/trace-format.md), [replay semantics](docs/replay-semantics.md), and [limitations](docs/limitations.md).
 
 ## Roadmap
 

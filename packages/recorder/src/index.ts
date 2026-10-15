@@ -38,19 +38,30 @@ export class SqliteTraceStore implements TraceStore {
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   load(traceId: string): ExecutionEvent[] {
-    const row = this.db.prepare('SELECT digest FROM traces WHERE id = ?').get(traceId);
+    const row = this.db.prepare('SELECT parent_id, outcome, digest FROM traces WHERE id = ?').get(traceId);
     if (!row) throw new Error(`Unknown trace: ${traceId}`);
-    const rows = this.db.prepare('SELECT body FROM events WHERE trace_id = ? ORDER BY sequence').all(traceId);
+    const rows = this.db.prepare('SELECT sequence, event_id, body FROM events WHERE trace_id = ? ORDER BY sequence').all(traceId);
     const events = validateTrace(rows.map(r => JSON.parse(String(r.body)) as unknown));
     if (fingerprint(events) !== row.digest) throw new Error(`Stored trace integrity mismatch: ${traceId}`);
+    const start = events[0]!;
+    const last = events.at(-1)!;
+    const parent = start.eventType === 'run.started' ? start.payload.lineage?.parentTraceId ?? null : null;
+    const outcome = last.eventType === 'run.completed' ? (last.payload.success ? 'success' : 'failure') : 'error';
+    if (start.traceId !== traceId || row.parent_id !== parent || row.outcome !== outcome ||
+      rows.some((r, i) => r.sequence !== events[i]!.sequenceNumber || r.event_id !== events[i]!.eventId)) {
+      throw new Error(`Stored trace metadata integrity mismatch: ${traceId}`);
+    }
     return events;
   }
   list(): TraceSummary[] {
-    return this.db.prepare(`SELECT t.id, t.parent_id, t.outcome, COUNT(e.sequence) AS count
-      FROM traces t JOIN events e ON t.id = e.trace_id GROUP BY t.id ORDER BY t.rowid`).all().map(r => ({
-      traceId: String(r.id), parentTraceId: r.parent_id === null ? null : String(r.parent_id),
-      outcome: r.outcome as TraceSummary['outcome'], eventCount: Number(r.count),
-    }));
+    // Validate the source history before presenting denormalized metadata as fact.
+    return this.db.prepare('SELECT id FROM traces ORDER BY rowid').all().map(r => {
+      const traceId = String(r.id);
+      const events = this.load(traceId);
+      const start = events[0]!; const last = events.at(-1)!;
+      return { traceId, parentTraceId: start.eventType === 'run.started' ? start.payload.lineage?.parentTraceId ?? null : null,
+        outcome: last.eventType === 'run.completed' ? (last.payload.success ? 'success' : 'failure') : 'error', eventCount: events.length };
+    });
   }
   close(): void { this.db.close(); }
 }
@@ -67,7 +78,7 @@ export class Recorder {
     });
     validateTrace([...this.history, event], false);
     this.history.push(event);
-    return event as ExecutionEvent & {eventType: T};
+    return structuredClone(event) as ExecutionEvent & {eventType: T};
   }
   events(): ExecutionEvent[] { return structuredClone(this.history); }
   finish(store?: TraceStore): ExecutionEvent[] {

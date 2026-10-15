@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { constants, closeSync, fstatSync, lstatSync, mkdtempSync, openSync, readFileSync, readdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { canonical, docsResponseSchema, fingerprint, snapshot, testResultSchema, verifySnapshot } from '@causal/trace-schema';
@@ -7,10 +7,10 @@ import type { DocsResponse, ExecutionEvent, Json, Snapshot, TestResult } from '@
 import { Recorder } from '@causal/recorder';
 import type { TraceStore } from '@causal/recorder';
 
-export const misleadingDocs: DocsResponse = { api: 'auth.loginLegacy()' };
-export const correctedDocs: DocsResponse = { api: 'auth.login()' };
+export const misleadingDocs = Object.freeze<DocsResponse>({ api: 'auth.loginLegacy()' });
+export const correctedDocs = Object.freeze<DocsResponse>({ api: 'auth.login()' });
 // These are trusted fixture bytes, never loaded from an imported trace or repository.
-export const fixtureFiles = {
+export const fixtureFiles = Object.freeze({
   'auth.mjs': `export const auth = Object.freeze({ login: () => 'session:alice' });\n`,
   'test.mjs': `import assert from 'node:assert/strict';
 import { authenticate } from './solution.mjs';
@@ -22,7 +22,7 @@ try {
   process.exitCode = 1;
 }
 `,
-};
+});
 export function initialSnapshot(): Snapshot {
   return snapshot({ agent: { phase: 'awaiting-documentation', task: 'implement-auth' },
     files: fixtureFiles, toolState: { lookupVersion: 'misleading-v1' }, config: { fixtureVersion: 1, nodeMajor: 24 } });
@@ -43,18 +43,22 @@ export interface ToolDriver {
 /** Only this driver executes processes; its inputs are constrained to trusted templates. */
 export class LiveFixtureDriver implements ToolDriver {
   readonly workspace: string;
-  private written = false;
-  constructor(boundary: Snapshot, private readonly response: DocsResponse = misleadingDocs) {
+  private source: string | undefined;
+  private readonly response: DocsResponse;
+  constructor(boundary: Snapshot, response: DocsResponse = misleadingDocs) {
     verifyBoundary(boundary);
+    this.response = docsResponseSchema.parse(response);
     if (process.versions.node.split('.')[0] !== '24') throw new Error('Fixture requires Node.js 24 for a stable execution environment');
     this.workspace = mkdtempSync(join(tmpdir(), 'causal-fixture-'));
     try {
       for (const [name, contents] of Object.entries(fixtureFiles)) writeFileSync(join(this.workspace, name), contents, { mode: 0o600, flag: 'wx' });
       const restored = Object.fromEntries(Object.keys(fixtureFiles).map(name => [name, readFileSync(join(this.workspace, name), 'utf8')]));
       if (fingerprint(restored) !== fingerprint(boundary.files)) throw new Error('Restored workspace does not match checkpoint');
+      this.verifyWorkspace();
     } catch (error) { this.close(); throw error; }
   }
   perform(tool: Tool, input: Json): Json {
+    this.verifyWorkspace();
     switch (tool) {
       case 'docs.lookup': {
         if (canonical(input) !== canonical({ topic: 'authentication' })) throw new Error('Unsupported documentation request');
@@ -64,14 +68,33 @@ export class LiveFixtureDriver implements ToolDriver {
         if (!input || Array.isArray(input) || typeof input !== 'object' || input.path !== 'solution.mjs' ||
           ![generateSource(misleadingDocs), generateSource(correctedDocs)].includes(String(input.contents))) throw new Error('Only trusted solution templates may be executed');
         writeFileSync(join(this.workspace, 'solution.mjs'), String(input.contents), { mode: 0o600, flag: 'wx' });
-        this.written = true;
+        this.source = String(input.contents);
+        this.verifyWorkspace();
         return { path: 'solution.mjs', contentHash: fingerprint(readFileSync(join(this.workspace, 'solution.mjs'), 'utf8')) };
       }
       case 'tests.run': {
-        if (!this.written || canonical(input) !== canonical({ suite: 'authentication' })) throw new Error('Unsupported test request');
-        return this.runTest() as unknown as Json;
+        if (!this.source || canonical(input) !== canonical({ suite: 'authentication' })) throw new Error('Unsupported test request');
+        const result = this.runTest();
+        this.verifyWorkspace();
+        return result as unknown as Json;
       }
     }
+  }
+  private verifyWorkspace(): void {
+    const expected: Record<string, string> = { ...fixtureFiles, ...(this.source === undefined ? {} : { 'solution.mjs': this.source }) };
+    try {
+      const root = lstatSync(this.workspace);
+      if (!root.isDirectory() || root.isSymbolicLink()) throw new Error('Workspace root is not a directory');
+      if (canonical(readdirSync(this.workspace).sort()) !== canonical(Object.keys(expected).sort())) throw new Error('Unexpected workspace inventory');
+      for (const [name, contents] of Object.entries(expected)) {
+        // O_NOFOLLOW closes the final-component symlink race; this is not an OS sandbox.
+        const fd = openSync(join(this.workspace, name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        try {
+          const stat = fstatSync(fd);
+          if (!stat.isFile() || stat.size !== Buffer.byteLength(contents) || readFileSync(fd, 'utf8') !== contents) throw new Error(`Changed fixture file: ${name}`);
+        } finally { closeSync(fd); }
+      }
+    } catch (error) { throw new Error('Workspace integrity mismatch: expected only the recorded trusted fixture bytes', { cause: error }); }
   }
   private runTest(): TestResult {
     // No shell, inherited credentials, repository scripts, or user-provided executable bytes.

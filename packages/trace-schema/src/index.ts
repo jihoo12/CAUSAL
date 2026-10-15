@@ -2,8 +2,19 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
-export const jsonSchema: z.ZodType<Json> = z.lazy(() => z.union([
-  z.null(), z.boolean(), z.number().finite(), z.string(), z.array(jsonSchema), z.record(jsonSchema),
+// Zod's record parser omits __proto__. Reject it before parsing rather than
+// hashing a different value from the one supplied on the wire.
+function safeRecord<S extends z.ZodTypeAny>(value: S) {
+  return z.preprocess((input, ctx) => {
+    if (input !== null && typeof input === 'object' && Object.hasOwn(input, '__proto__')) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Unsafe JSON key: __proto__' });
+      return z.NEVER;
+    }
+    return input;
+  }, z.record(value));
+}
+export const jsonSchema: z.ZodType<Json, z.ZodTypeDef, unknown> = z.lazy(() => z.union([
+  z.null(), z.boolean(), z.number().finite(), z.string(), z.array(jsonSchema), safeRecord(jsonSchema),
 ]));
 export function canonical(value: unknown): string {
   const parsed = jsonSchema.parse(value);
@@ -22,7 +33,7 @@ export const docsResponseSchema = z.object({ api: z.enum(['auth.loginLegacy()', 
 export type DocsResponse = z.infer<typeof docsResponseSchema>;
 export const snapshotBodySchema = z.object({
   agent: z.object({ phase: z.enum(['awaiting-documentation', 'completed']), task: z.literal('implement-auth') }).strict(),
-  files: z.record(z.string()),
+  files: safeRecord(z.string()),
   toolState: z.object({ lookupVersion: z.literal('misleading-v1') }).strict(),
   config: z.object({ fixtureVersion: z.literal(1), nodeMajor: z.literal(24) }).strict(),
 }).strict();
@@ -85,6 +96,7 @@ export function validateTrace(input: unknown, complete = true): ExecutionEvent[]
   const pending = new Map<string, Extract<ExecutionEvent, {eventType: 'tool.called'}>>();
   const calls = new Set<string>();
   let terminal = false;
+  let toolErrored = false;
   for (const [i, e] of events.entries()) {
     if (e.sequenceNumber !== i) throw new Error(`Invalid ordering at sequence ${i}`);
     if (e.traceId !== events[0]!.traceId) throw new Error('Mixed trace IDs');
@@ -101,8 +113,13 @@ export function validateTrace(input: unknown, complete = true): ExecutionEvent[]
       const call = pending.get(e.payload.callId);
       if (!call || call.payload.tool !== e.payload.tool || e.parentEventId !== call.eventId) throw new Error('Unmatched tool result');
       pending.delete(e.payload.callId);
+      if (e.payload.error) toolErrored = true;
+    }
+    if (e.eventType === 'intervention.applied' && canonical(e.payload.original) === canonical(e.payload.replacement)) {
+      throw new Error('Replacement must differ from the original tool response');
     }
     if (e.eventType === 'state.checkpoint') verifySnapshot(e.payload.snapshot);
+    if (e.eventType === 'run.completed' && toolErrored) throw new Error('Normal completion after an errored tool');
     if (e.eventType === 'run.completed' || e.eventType === 'run.failed') terminal = true;
     ids.set(e.eventId, e);
   }
@@ -114,8 +131,10 @@ export function validateTrace(input: unknown, complete = true): ExecutionEvent[]
     const interventions = events.filter(e => e.eventType === 'intervention.applied');
     if (start.payload.lineage) {
       const l = start.payload.lineage;
+      if (l.parentTraceId === start.traceId) throw new Error('A trace cannot be its own parent; fork IDs must be distinct');
       const intervention = interventions[0];
-      if ((complete && interventions.length !== 1) || interventions.length > 1) throw new Error('Fork requires exactly one intervention');
+      // A handled operational failure can stop before the intervention boundary.
+      if ((complete && events.at(-1)!.eventType === 'run.completed' && interventions.length !== 1) || interventions.length > 1) throw new Error('Fork requires exactly one intervention');
       if (intervention?.eventType === 'intervention.applied') {
         const p = intervention.payload;
         if (p.parentTraceId !== l.parentTraceId || p.targetEventId !== l.targetEventId || p.checkpointFingerprint !== l.checkpointFingerprint) throw new Error('Inconsistent intervention lineage');
