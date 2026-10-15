@@ -1,0 +1,20 @@
+{
+  "name": "@causal/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "types": "./dist/index.d.ts",
+    "default": "./dist/index.js"
+  },
+  "bin": {
+    "causal": "./dist/index.js"
+  },
+  "dependencies": {
+    "@causal/trace-schema": "workspace:*",
+    "@causal/recorder": "workspace:*",
+    "@causal/replay-engine": "workspace:*",
+    "@causal/experiment-engine": "workspace:*",
+    "@causal/broken-auth-agent": "workspace:*"
+  }
+}
